@@ -6,27 +6,29 @@ import (
 	"log"
 	"time"
 
-	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-//ErrNotFound ...
-var ErrNotFound = errors.New("item not found")
+//ErrNotFound var
+var (
+	ErrNotFound = errors.New("item not found")
+	ErrInternal = errors.New("internal error")
+)
 
-//ErrInternal ...
-var ErrInternal = errors.New("internal error")
-
-//Service ..
+//Service type
 type Service struct {
-	db *pgxpool.Pool
+	pool *pgxpool.Pool
 }
 
-//NewService ..
-func NewService(db *pgxpool.Pool) *Service {
-	return &Service{db: db}
+//NewService type
+func NewService(pool *pgxpool.Pool) *Service {
+	return &Service{
+		pool: pool,
+	}
 }
 
-//Customer ...
+//Customer struct
 type Customer struct {
 	ID      int64     `json:"id"`
 	Name    string    `json:"name"`
@@ -35,184 +37,202 @@ type Customer struct {
 	Created time.Time `json:"created"`
 }
 
-//All ....
-func (s *Service) All(ctx context.Context) (cs []*Customer, err error) {
-
-	//это наш sql запрос
-	sqlStatement := `select * from customers`
-
-	rows, err := s.db.Query(ctx, sqlStatement)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		item := &Customer{}
-		err := rows.Scan(
-			&item.ID,
-			&item.Name,
-			&item.Phone,
-			&item.Active,
-			&item.Created,
-		)
-		if err != nil {
-			log.Println(err)
-		}
-		cs = append(cs, item)
-	}
-
-	return cs, nil
-}
-
-//AllActive ....
-func (s *Service) AllActive(ctx context.Context) (cs []*Customer, err error) {
-
-	//это наш sql запрос
-	sqlStatement := `select * from customers where active=true`
-
-	rows, err := s.db.Query(ctx, sqlStatement)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		item := &Customer{}
-		err := rows.Scan(
-			&item.ID,
-			&item.Name,
-			&item.Phone,
-			&item.Active,
-			&item.Created,
-		)
-		if err != nil {
-			log.Println(err)
-		}
-		cs = append(cs, item)
-	}
-
-	return cs, nil
-}
-
-//ByID ...
+//ByID func
 func (s *Service) ByID(ctx context.Context, id int64) (*Customer, error) {
 	item := &Customer{}
 
-	//это наш sql запрос
-	sqlStatement := `select * from customers where id=$1`
-	//выполняем запрос к базу
-	err := s.db.QueryRow(ctx, sqlStatement, id).Scan(
-		&item.ID,
-		&item.Name,
-		&item.Phone,
-		&item.Active,
-		&item.Created)
+	err := s.pool.QueryRow(ctx, `
+		SELECT id, name, phone, active, created
+		FROM customers
+		WHERE id = $1;
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
 
-	//если sql нам не вернул резултат
 	if err == pgx.ErrNoRows {
 		return nil, ErrNotFound
 	}
-	//проверим ошибку если во время выполнения запросы было какая то ошибка то вернем InternalError
+
 	if err != nil {
 		log.Print(err)
 		return nil, ErrInternal
 	}
-	return item, nil
 
+	return item, nil
 }
 
-//ChangeActive ...
-func (s *Service) ChangeActive(ctx context.Context, id int64, active bool) (*Customer, error) {
-	item := &Customer{}
+//All func
+func (s *Service) All(ctx context.Context) ([]*Customer, error) {
+	items := []*Customer{}
 
-	//это наш sql запрос
-	sqlStatement := `update customers set active=$2 where id=$1 returning *`
-	//выполняем запрос к базу
-	err := s.db.QueryRow(ctx, sqlStatement, id, active).Scan(
-		&item.ID,
-		&item.Name,
-		&item.Phone,
-		&item.Active,
-		&item.Created)
-	//если sql нам не вернул резултат
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, phone, active, created FROM customers;
+	`)
 	if err == pgx.ErrNoRows {
 		return nil, ErrNotFound
 	}
-	//проверим ошибку если во время выполнения запросы было какая то ошибка то вернем InternalError
+
 	if err != nil {
 		log.Print(err)
 		return nil, ErrInternal
 	}
-	return item, nil
 
+	defer rows.Close()
+
+	for rows.Next() {
+		item := &Customer{}
+		err := rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return nil, err
+	}
+
+	return items, nil
 }
 
-//Delete ...
-func (s *Service) Delete(ctx context.Context, id int64) (*Customer, error) {
-	item := &Customer{}
+//AllActive func
+func (s *Service) AllActive(ctx context.Context) ([]*Customer, error) {
+	items := []*Customer{}
 
-	//это наш sql запрос
-	sqlStatement := `delete from customers  where id=$1 returning *`
-	//выполняем запрос к базу
-	err := s.db.QueryRow(ctx, sqlStatement, id).Scan(
-		&item.ID,
-		&item.Name,
-		&item.Phone,
-		&item.Active,
-		&item.Created)
-
-	//если sql нам не вернул резултат
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, phone, active, created FROM customers WHERE active = $1;
+	`, true)
 	if err == pgx.ErrNoRows {
 		return nil, ErrNotFound
 	}
-	//проверим ошибку если во время выполнения запросы было какая то ошибка то вернем InternalError
+
 	if err != nil {
 		log.Print(err)
 		return nil, ErrInternal
 	}
-	return item, nil
 
+	defer rows.Close()
+
+	for rows.Next() {
+		item := &Customer{}
+		err := rows.Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return nil, err
+	}
+
+	return items, nil
 }
 
-//Save ...
-func (s *Service) Save(ctx context.Context, customer *Customer) (c *Customer, err error) {
-
-	//обявляем пустую структуру
+//Save func
+func (s *Service) Save(ctx context.Context, customer *Customer) (*Customer, error) {
 	item := &Customer{}
 
-	//если id равно то сделаем инцерт (тоест создаем и веренем только что созданный клиент)
 	if customer.ID == 0 {
-
-		//это наш sql запрос
-		sqlStatement := `insert into customers(name, phone) values($1, $2) returning *`
-
-		//выполняем запрос к базу
-		err = s.db.QueryRow(ctx, sqlStatement, customer.Name, customer.Phone).Scan(
+		err := s.pool.QueryRow(ctx, `
+			INSERT INTO customers(name, phone)
+			VALUES($1, $2)
+			RETURNING id, name, phone, active, created; 
+		`, customer.Name, customer.Phone).Scan(
 			&item.ID,
 			&item.Name,
 			&item.Phone,
 			&item.Active,
-			&item.Created)
+			&item.Created,
+		)
 
-	} else { //если нет обновляем и вернем обновленный
-
-		//это наш sql запрос
-		sqlStatement := `update customers set name=$1, phone=$2 where id=$3 returning *`
-		//выполняем запрос к базу
-		err = s.db.QueryRow(ctx, sqlStatement, customer.Name, customer.Phone, customer.ID).Scan(
-			&item.ID,
-			&item.Name,
-			&item.Phone,
-			&item.Active,
-			&item.Created)
+		if err != nil {
+			log.Print(err)
+			return nil, ErrInternal
+		}
+		return item, nil
 	}
 
-	//проверим ошибку если во время выполнения запросы было какая то ошибка то вернем InternalError
+	err := s.pool.QueryRow(ctx, `
+			UPDATE customers
+			SET name=$1, phone=$2 where id=$3
+			RETURNING id, name, phone, active, created; 
+		`, customer.Name, customer.Phone, customer.ID).Scan(
+		&item.ID,
+		&item.Name,
+		&item.Phone,
+		&item.Active,
+		&item.Created,
+	)
+
 	if err != nil {
 		log.Print(err)
 		return nil, ErrInternal
 	}
 	return item, nil
+}
 
+//RemoveByID func
+func (s *Service) RemoveByID(ctx context.Context, id int64) (*Customer, error) {
+	item := &Customer{}
+
+	err := s.pool.QueryRow(ctx, `
+		DELETE FROM customers
+		WHERE id = $1
+		RETURNING id, name, phone, active, created;
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+	if err == pgx.ErrNoRows {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+
+	return item, nil
+}
+
+//BlockByID func
+func (s *Service) BlockByID(ctx context.Context, id int64) (*Customer, error) {
+	item := &Customer{}
+
+	err := s.pool.QueryRow(ctx, `
+		UPDATE customers
+		SET active = false
+		WHERE id = $1
+		RETURNING id, name, phone, active, created;
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+	if err == pgx.ErrNoRows {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+
+	return item, nil
+}
+
+//UnblockByID func
+func (s *Service) UnblockByID(ctx context.Context, id int64) (*Customer, error) {
+	item := &Customer{}
+
+	err := s.pool.QueryRow(ctx, `
+		UPDATE customers
+		SET active = true
+		WHERE id = $1
+		RETURNING id, name, phone, active, created;
+	`, id).Scan(&item.ID, &item.Name, &item.Phone, &item.Active, &item.Created)
+	if err == pgx.ErrNoRows {
+		return nil, ErrNotFound
+	}
+
+	if err != nil {
+		log.Print(err)
+		return nil, ErrInternal
+	}
+
+	return item, nil
 }

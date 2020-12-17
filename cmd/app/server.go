@@ -7,318 +7,283 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/FaranushKarimov/crud/cmd/app/middleware"
 	"github.com/FaranushKarimov/crud/pkg/customers"
+	"github.com/FaranushKarimov/crud/pkg/customers/security"
 	"github.com/gorilla/mux"
 )
 
-//406.75
-//4.0675p
-//465p
-
-//Server ...
+// Server ...
 type Server struct {
-	mux         *mux.Router
-	customerSvc *customers.Service
+	mux          *mux.Router
+	customersSvc *customers.Service
+	security     *security.Service
 }
 
-//NewServer ... создает новый сервер
-func NewServer(m *mux.Router, cSvc *customers.Service) *Server {
-	return &Server{mux: m, customerSvc: cSvc}
+// NewServer ...
+func NewServer(mux *mux.Router, customersSvc *customers.Service, security *security.Service) *Server {
+	return &Server{
+		mux:          mux,
+		customersSvc: customersSvc,
+		security:     security,
+	}
 }
 
-// функция для запуска хендлеров через мукс
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+// ServerHTTP ...
+func (s *Server) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+	s.mux.ServeHTTP(rw, r)
 }
 
-//Init ... инициализация сервера
+// Init ...
 func (s *Server) Init() {
-	//s.mux.HandleFunc("/customers.getById", s.handleGetCustomerByID)
+	s.mux.Use(middleware.Logger)
+	auth := middleware.Basic(s.security.Auth)
+	s.mux.Use(auth)
+	chMd := middleware.CheckHeader("Content-Type", "application/json")
 
 	s.mux.HandleFunc("/customers", s.handleGetAllCustomers).Methods("GET")
-	s.mux.HandleFunc("/customers", s.handleSave).Methods("POST")
+	s.mux.Handle("/customers", chMd(http.HandlerFunc(s.handleSaveCustomer))).Methods("POST")
 	s.mux.HandleFunc("/customers/active", s.handleGetAllActiveCustomers).Methods("GET")
-
 	s.mux.HandleFunc("/customers/{id}", s.handleGetCustomerByID).Methods("GET")
-	s.mux.HandleFunc("/customers/{id}/block", s.handleBlockByID).Methods("POST")
-	s.mux.HandleFunc("/customers/{id}/block", s.handleUnBlockByID).Methods("DELETE")
-	s.mux.HandleFunc("/customers/{id}", s.handleDelete).Methods("DELETE")
-
-	/*
-		http://127.0.0.1:9999/customers.getById?id=1
-		http://127.0.0.1:9999/customers.getAll
-		http://127.0.0.1:9999/customers.getAllActive
-		http://127.0.0.1:9999/customers.blockById?id=1
-		http://127.0.0.1:9999/customers.unblockById?id=1
-		http://127.0.0.1:9999/customers.removeById?id=1
-
-	*/
+	s.mux.HandleFunc("/customers/{id}", s.handleRemoveCustomerByID).Methods("DELETE")
+	s.mux.HandleFunc("/customers/{id}/block", s.handleBlockCustomerByID).Methods("POST")
+	s.mux.HandleFunc("/customers/{id}/block", s.handleUnblockCustomerByID).Methods("DELETE")
 }
 
-// хендлер метод для извлечения всех клиентов
-func (s *Server) handleGetAllCustomers(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetCustomerByID(rw http.ResponseWriter, r *http.Request) {
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
 
-	//берем все клиенты
-	items, err := s.customerSvc.All(r.Context())
-
-	//если ест ошибка
+	id, err := strconv.ParseInt(idParam, 10, 64)
 	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
 
-	//передаем в функции respondJSON, ResponseWriter и данные (он отвечает клиенту)
-	respondJSON(w, items)
-}
-
-// хендлер метод для извлечения всех активных клиентов
-func (s *Server) handleGetAllActiveCustomers(w http.ResponseWriter, r *http.Request) {
-
-	//берем всех активных клиентов
-	items, err := s.customerSvc.AllActive(r.Context())
-
-	//если есть ошибка
+	item, err := s.customersSvc.ByID(r.Context(), id)
 	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	//передаем в функции respondJSON, ResponseWriter и данные (он отвечает клиенту)
-	respondJSON(w, items)
-}
-
-//хендлер который верет по айди
-func (s *Server) handleGetCustomerByID(w http.ResponseWriter, r *http.Request) {
-	//получаем ID из параметра запроса
-	//idP := r.URL.Query().Get("id")
-	idP := mux.Vars(r)["id"]
-
-	// переобразуем его в число
-	id, err := strconv.ParseInt(idP, 10, 64)
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusBadRequest, err)
-		return
-	}
-
-	//получаем баннер из сервиса
-	item, err := s.customerSvc.ByID(r.Context(), id)
-
-	//если ошибка равно на notFound то вернем ошибку не найдено
-	if errors.Is(err, customers.ErrNotFound) {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusNotFound, err)
-		return
-	}
-
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
-		return
-	}
-	//передаем в функции respondJSON, ResponseWriter и данные (он отвечает клиенту)
-	respondJSON(w, item)
-}
-
-//хендлер для блокировки
-func (s *Server) handleBlockByID(w http.ResponseWriter, r *http.Request) {
-	//получаем ID из параметра запроса
-	//idP := r.URL.Query().Get("id")
-	idP := mux.Vars(r)["id"]
-
-	// переобразуем его в число
-	id, err := strconv.ParseInt(idP, 10, 64)
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusBadRequest, err)
-		return
-	}
-
-	//изменяем статус клиента на фалсе
-	item, err := s.customerSvc.ChangeActive(r.Context(), id, false)
-	//если ошибка равно на notFound то вернем ошибку не найдено
-	if errors.Is(err, customers.ErrNotFound) {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusNotFound, err)
-		return
-	}
-
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
-		return
-	}
-	//передаем в функции respondJSON, ResponseWriter и данные (он отвечает клиенту)
-	respondJSON(w, item)
-}
-
-//хенндлер для разблокировки
-func (s *Server) handleUnBlockByID(w http.ResponseWriter, r *http.Request) {
-	//получаем ID из параметра запроса
-	//idP := r.URL.Query().Get("id")
-	idP := mux.Vars(r)["id"]
-
-	// переобразуем его в число
-	id, err := strconv.ParseInt(idP, 10, 64)
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusBadRequest, err)
-		return
-	}
-
-	//получаем баннер из сервиса
-	item, err := s.customerSvc.ChangeActive(r.Context(), id, true)
-	//если ошибка равно на notFound то вернем ошибку не найдено
-	if errors.Is(err, customers.ErrNotFound) {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusNotFound, err)
-		return
-	}
-
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
-		return
-	}
-	//вызываем функцию для ответа в формате JSON
-	//передаем в функции respondJSON, ResponseWriter и данные (он отвечает клиенту)
-	respondJSON(w, item)
-}
-
-func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	//получаем ID из параметра запроса
-	//idP := r.URL.Query().Get("id")
-	idP := mux.Vars(r)["id"]
-
-	// переобразуем его в число
-	id, err := strconv.ParseInt(idP, 10, 64)
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusBadRequest, err)
-		return
-	}
-
-	//удаляем клиента из базу
-	item, err := s.customerSvc.Delete(r.Context(), id)
-	//если ошибка равно на notFound то вернем ошибку не найдено
-	if errors.Is(err, customers.ErrNotFound) {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusNotFound, err)
-		return
-	}
-
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
-		return
-	}
-	//вызываем функцию для ответа в формате JSON
-	//передаем в функции respondJSON, ResponseWriter и данные (он отвечает клиенту)
-	respondJSON(w, item)
-}
-
-//хендлер для сохранения и обновления
-func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
-	/*
-		//получаем данные из параметра запроса
-		idP := r.FormValue("id")
-		name := r.FormValue("name")
-		phone := r.FormValue("phone")
-
-		id, err := strconv.ParseInt(idP, 10, 64)
-		//если получили ошибку то отвечаем с ошибкой
-		if err != nil {
-			//вызываем фукцию для ответа с ошибкой
-			errorWriter(w, http.StatusBadRequest, err)
+		log.Print(err)
+		if errors.Is(err, customers.ErrNotFound) {
+			http.Error(rw, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 			return
 		}
-		//Здесь опционалная проверка то что если все данные приходит пустыми то вернем ошибку
-		if name == "" && phone == "" {
-			//вызываем фукцию для ответа с ошибкой
-			errorWriter(w, http.StatusBadRequest, err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
+}
+
+func (s *Server) handleGetAllCustomers(rw http.ResponseWriter, r *http.Request) {
+	items, err := s.customersSvc.All(r.Context())
+	if err != nil {
+		log.Print(err)
+		if errors.Is(err, customers.ErrNotFound) {
+			http.Error(rw, http.StatusText(http.StatusNotFound), http.StatusNotFound)
 			return
 		}
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
 
-		//обявляем новый клиент
-		item := &customers.Customer{
-			ID:    id,
-			Name:  name,
-			Phone: phone,
+	data, err := json.Marshal(items)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
+}
+
+func (s *Server) handleGetAllActiveCustomers(rw http.ResponseWriter, r *http.Request) {
+	items, err := s.customersSvc.AllActive(r.Context())
+	if err != nil {
+		log.Print(err)
+		if errors.Is(err, customers.ErrNotFound) {
+			http.Error(rw, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
 		}
-	*/
-
-	var item *customers.Customer
-
-	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusBadRequest, err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
 
-	//сохроняем или обновляем клиент
-	customer, err := s.customerSvc.Save(r.Context(), item)
-
-	//если получили ошибку то отвечаем с ошибкой
+	data, err := json.Marshal(items)
 	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	//вызываем функцию для ответа в формате JSON
-	respondJSON(w, customer)
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
 }
 
-/*
-+
-+
-+
-+
-+
-+
-+
-*/
-//это фукция для записывание ошибки в responseWriter или просто для ответа с ошиками
-func errorWriter(w http.ResponseWriter, httpSts int, err error) {
-	//печатаем ошибку
-	log.Print(err)
-	//отвечаем ошибку с помошю библиотеке net/http
-	http.Error(w, http.StatusText(httpSts), httpSts)
-}
+func (s *Server) handleSaveCustomer(rw http.ResponseWriter, r *http.Request) {
+	var itemToSave *customers.Customer
 
-/*
-+
-+
-+
-*/
-//это функция для ответа в формате JSON (он принимает интерфейс по этому мы можем в нем передат все что захочется)
-func respondJSON(w http.ResponseWriter, iData interface{}) {
-
-	//преобразуем данные в JSON
-	data, err := json.Marshal(iData)
-
-	//если получили ошибку то отвечаем с ошибкой
-	if err != nil {
-		//вызываем фукцию для ответа с ошибкой
-		errorWriter(w, http.StatusInternalServerError, err)
+	if err := json.NewDecoder(r.Body).Decode(&itemToSave); err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
-	//поставить хедер "Content-Type: application/json" в ответе
-	w.Header().Set("Content-Type", "application/json")
-	//пишем ответ
-	_, err = w.Write(data)
-	//если получили ошибку
+
+	item, err := s.customersSvc.Save(r.Context(), itemToSave)
 	if err != nil {
-		//печатаем ошибку
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
+}
+
+func (s *Server) handleRemoveCustomerByID(rw http.ResponseWriter, r *http.Request) {
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.ParseInt(idParam, 10, 64)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	item, err := s.customersSvc.RemoveByID(r.Context(), id)
+	if err != nil {
+		log.Print(err)
+		if errors.Is(err, customers.ErrNotFound) {
+			http.Error(rw, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
+}
+
+func (s *Server) handleBlockCustomerByID(rw http.ResponseWriter, r *http.Request) {
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.ParseInt(idParam, 10, 64)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	item, err := s.customersSvc.BlockByID(r.Context(), id)
+	if err != nil {
+		log.Print(err)
+		if errors.Is(err, customers.ErrNotFound) {
+			http.Error(rw, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
+		log.Print(err)
+	}
+}
+
+func (s *Server) handleUnblockCustomerByID(rw http.ResponseWriter, r *http.Request) {
+	idParam, ok := mux.Vars(r)["id"]
+	if !ok {
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.ParseInt(idParam, 10, 64)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
+	}
+
+	item, err := s.customersSvc.UnblockByID(r.Context(), id)
+	if err != nil {
+		log.Print(err)
+		if errors.Is(err, customers.ErrNotFound) {
+			http.Error(rw, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+			return
+		}
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := json.Marshal(item)
+	if err != nil {
+		log.Print(err)
+		http.Error(rw, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	_, err = rw.Write(data)
+	if err != nil {
 		log.Print(err)
 	}
 }
