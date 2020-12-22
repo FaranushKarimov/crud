@@ -2,414 +2,94 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
 	"log"
 	"net/http"
-	"strconv"
 
+	"github.com/FaranushKarimov/crud/cmd/app/middleware"
 	"github.com/FaranushKarimov/crud/pkg/customers"
-	"github.com/FaranushKarimov/crud/pkg/security"
+	"github.com/FaranushKarimov/crud/pkg/managers"
 	"github.com/gorilla/mux"
-	"golang.org/x/crypto/bcrypt"
 )
 
-// Server ...
+//Server ...
 type Server struct {
-	mux          *mux.Router
-	customersSvc *customers.Service
-	securitySvc  *security.Service
+	mux         *mux.Router
+	customerSvc *customers.Service
+	managerSvc  *managers.Service
 }
 
-// NewServer ...
-func NewServer(mux *mux.Router, customersSvc *customers.Service, securitySvc *security.Service) *Server {
-	return &Server{mux: mux, customersSvc: customersSvc, securitySvc: securitySvc}
+//NewServer ... создает новый сервер
+func NewServer(m *mux.Router, cSvc *customers.Service, mSvc *managers.Service) *Server {
+	return &Server{
+		mux:         m,
+		customerSvc: cSvc,
+		managerSvc:  mSvc,
+	}
 }
 
-// ServeHTTP ...
+// функция для запуска хендлеров через мукс
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(w, r)
 }
 
-const (
-	// GET ...
-	GET = "GET"
-	// POST ...
-	POST = "POST"
-	// DELETE ...
-	DELETE = "DELETE"
-)
-
-// Init ...
+//Init ... инициализация сервера
 func (s *Server) Init() {
-	// s.mux.HandleFunc("/customers.getAll", s.handleGetAllCustomers)
-	s.mux.HandleFunc("/customers", s.handleGetAllCustomers).Methods(GET)
 
-	// s.mux.HandleFunc("/customers.getAllActive", s.handleGetAllActiveCustomers)
-	s.mux.HandleFunc("/customers/active", s.handleGetAllActiveCustomers).Methods(GET)
+	customersAuthenticateMd := middleware.Authenticate(s.customerSvc.IDByToken)
+	customersSubrouter := s.mux.PathPrefix("/api/customers").Subrouter()
+	customersSubrouter.Use(customersAuthenticateMd)
 
-	// s.mux.HandleFunc("/customers.getById", s.handleGetCustomerByID)
-	s.mux.HandleFunc("/customers/{id}", s.handleGetCustomerByID).Methods(GET)
+	customersSubrouter.HandleFunc("", s.handleCustomerRegistration).Methods("POST")
+	customersSubrouter.HandleFunc("/token", s.handleCustomerGetToken).Methods("POST")
+	customersSubrouter.HandleFunc("/products", s.handleCustomerGetProducts).Methods("GET")
 
-	// s.mux.HandleFunc("/customers.save", s.handleSaveCustomer)
-	// s.mux.HandleFunc("/customers", s.handleSaveCustomer).Methods(POST)
+	managersAuthenticateMd := middleware.Authenticate(s.managerSvc.IDByToken)
+	managersSubRouter := s.mux.PathPrefix("/api/managers").Subrouter()
+	managersSubRouter.Use(managersAuthenticateMd)
+	managersSubRouter.HandleFunc("", s.handleManagerRegistration).Methods("POST")
+	managersSubRouter.HandleFunc("/token", s.handleManagerGetToken).Methods("POST")
+	managersSubRouter.HandleFunc("/sales", s.handleManagerGetSales).Methods("GET")
+	managersSubRouter.HandleFunc("/sales", s.handleManagerMakeSales).Methods("POST")
+	managersSubRouter.HandleFunc("/products", s.handleManagerGetProducts).Methods("GET")
+	managersSubRouter.HandleFunc("/products", s.handleManagerChangeProducts).Methods("POST")
+	managersSubRouter.HandleFunc("/products/{id:[0-9]+}", s.handleManagerRemoveProductByID).Methods("DELETE")
+	managersSubRouter.HandleFunc("/customers", s.handleManagerGetCustomers).Methods("GET")
+	managersSubRouter.HandleFunc("/customers", s.handleManagerChangeCustomer).Methods("POST")
+	managersSubRouter.HandleFunc("/customers/{id:[0-9]+}", s.handleManagerRemoveCustomerByID).Methods("DELETE")
 
-	// s.mux.HandleFunc("/customers.removeById", s.handleRemoveByID)
-	s.mux.HandleFunc("/customers/{id}", s.handleRemoveByID).Methods(DELETE)
-
-	// s.mux.HandleFunc("/customers.blockById", s.handleBlockByID)
-	s.mux.HandleFunc("/customers/{id}/block", s.handleBlockByID).Methods(POST)
-
-	// s.mux.HandleFunc("/customers.unblockById", s.handleUnblockByID)
-	s.mux.HandleFunc("/customers/{id}/block", s.handleUnblockByID).Methods(DELETE)
-
-	// s.mux.Use(middleware.Basic(s.securitySvc.Auth))
-
-	s.mux.HandleFunc("/api/customers", s.handleSaveCustomer).Methods(POST)
-	s.mux.HandleFunc("/api/customers/token", s.handleCreateToken).Methods(POST)
-	s.mux.HandleFunc("/api/customers/token/validate", s.handleValidateToken).Methods(POST)
 }
 
-func (s *Server) handleGetCustomerByID(w http.ResponseWriter, r *http.Request) {
-	idParam, ok := mux.Vars(r)["id"]
-
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.ParseInt(idParam, 10, 64)
-	if err != nil {
-		log.Print(err)
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	item, err := s.customersSvc.ByID(r.Context(), id)
-	if errors.Is(err, customers.ErrNotFound) {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
-	}
-
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-	}
+/*
++
++
+*/
+//это фукция для записывание ошибки в responseWriter или просто для ответа с ошиками
+func errorWriter(w http.ResponseWriter, httpSts int, err error) {
+	//печатаем ошибку
+	log.Print(err)
+	//отвечаем ошибку с помошю библиотеке net/http
+	http.Error(w, http.StatusText(httpSts), httpSts)
 }
 
-func (s *Server) handleGetAllCustomers(w http.ResponseWriter, r *http.Request) {
-	item, err := s.customersSvc.All(r.Context())
-	if errors.Is(err, customers.ErrNotFound) {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
-	}
+//это функция для ответа в формате JSON (он принимает интерфейс по этому мы можем в нем передат все что захочется)
+func respondJSON(w http.ResponseWriter, iData interface{}) {
 
+	//преобразуем данные в JSON
+	data, err := json.Marshal(iData)
+
+	//если получили ошибку то отвечаем с ошибкой
 	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		//вызываем фукцию для ответа с ошибкой
+		errorWriter(w, http.StatusInternalServerError, err)
 		return
 	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
+	//поставить хедер "Content-Type: application/json" в ответе
 	w.Header().Set("Content-Type", "application/json")
+	//пишем ответ
 	_, err = w.Write(data)
+	//если получили ошибку
 	if err != nil {
-		log.Print(err)
-		return
-	}
-}
-
-func (s *Server) handleGetAllActiveCustomers(w http.ResponseWriter, r *http.Request) {
-
-	item, err := s.customersSvc.AllActive(r.Context())
-	if errors.Is(err, customers.ErrNotFound) {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
-	}
-
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-}
-
-func (s *Server) handleSaveCustomer(w http.ResponseWriter, r *http.Request) {
-	var customer *customers.Customer
-
-	err := json.NewDecoder(r.Body).Decode(&customer)
-	if err != nil {
-		log.Print(err)
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(customer.Password), bcrypt.DefaultCost)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-	customer.Password = string(hash)
-
-	item, err := s.customersSvc.Save(r.Context(), customer)
-	if err != nil {
-		log.Print(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
+		//печатаем ошибку
 		log.Print(err)
 	}
-}
-
-func (s *Server) handleRemoveByID(w http.ResponseWriter, r *http.Request) {
-	idParam, ok := mux.Vars(r)["id"]
-
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.ParseInt(idParam, 10, 64)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	item, err := s.customersSvc.RemoveByID(r.Context(), id)
-	if errors.Is(err, customers.ErrNotFound) {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
-	}
-
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-}
-
-func (s *Server) handleBlockByID(w http.ResponseWriter, r *http.Request) {
-	idParam, ok := mux.Vars(r)["id"]
-
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.ParseInt(idParam, 10, 64)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	item, err := s.customersSvc.BlockByID(r.Context(), id)
-	if errors.Is(err, customers.ErrNotFound) {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
-	}
-
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-}
-
-func (s *Server) handleUnblockByID(w http.ResponseWriter, r *http.Request) {
-	idParam, ok := mux.Vars(r)["id"]
-
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.ParseInt(idParam, 10, 64)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	item, err := s.customersSvc.UnblockByID(r.Context(), id)
-	if errors.Is(err, customers.ErrNotFound) {
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		return
-	}
-
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	data, err := json.Marshal(item)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-		return
-	}
-}
-
-func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
-	var customer *struct {
-		Login    string `json:"login"`
-		Password string `json:"password"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&customer)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	token, err := s.securitySvc.TokenForCustomer(r.Context(), customer.Login, customer.Password)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-
-	}
-
-	response := map[string]interface{}{"status": "ok", "token": token}
-
-	data, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-	}
-}
-
-func (s *Server) handleValidateToken(w http.ResponseWriter, r *http.Request) {
-	var customer *struct {
-		Token string `json:"token"`
-	}
-
-	err := json.NewDecoder(r.Body).Decode(&customer)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-		return
-	}
-
-	id, err := s.securitySvc.AuthenticateCustomer(r.Context(), customer.Token)
-	if err != nil {
-		// status := http.StatusInternalServerError
-		status := http.StatusNotFound
-		errText := "not found"
-
-		if err == security.ErrNoSuchUser {
-			status = http.StatusNotFound
-			errText = "not found"
-		}
-		if err == security.ErrExpireToken {
-			status = http.StatusBadRequest
-			errText = "expired"
-		}
-
-		response := map[string]interface{}{"status": "fail", "reason": errText}
-		data, err := json.Marshal(response)
-		if err != nil {
-			http.Error(w, http.StatusText(status), status)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		// w.WriteHeader(http.StatusOK)
-		_, err = w.Write(data)
-		if err != nil {
-			log.Print(err)
-			return
-		}
-		return
-	}
-
-	response := make(map[string]interface{})
-	response["status"] = "ok"
-	response["customerId"] = id
-
-	data, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, err = w.Write(data)
-	if err != nil {
-		log.Print(err)
-	}
-
 }

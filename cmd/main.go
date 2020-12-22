@@ -2,62 +2,72 @@ package main
 
 import (
 	"context"
-	"net"
+	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/FaranushKarimov/crud/cmd/app"
 	"github.com/FaranushKarimov/crud/pkg/customers"
-	"github.com/FaranushKarimov/crud/pkg/security"
+	"github.com/FaranushKarimov/crud/pkg/managers"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"go.uber.org/dig"
 )
 
-// main function
 func main() {
+	//это хост
 	host := "0.0.0.0"
+	//это порт
 	port := "9999"
-	dsn := "postgres://app:pass@192.168.99.100:5432/db"
-
-	if err := execute(host, port, dsn); err != nil {
+	//это строка подключения к бд
+	dbConnectionString := "postgres://app:pass@localhost:5432/db"
+	//запускаем функцию execute c проверкой на err
+	if err := execute(host, port, dbConnectionString); err != nil {
+		//если получили ошибку то закрываем приложения
+		log.Print(err)
 		os.Exit(1)
 	}
-
 }
 
-//execute function
-func execute(host string, port string, dsn string) (err error) {
+//функция запуска сервера
+func execute(host, port, dbConnectionString string) (err error) {
 
-	deps := []interface{}{
-		app.NewServer,
-		mux.NewRouter,
-		func() (*pgxpool.Pool, error) {
-			ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
-			return pgxpool.Connect(ctx, dsn)
+	//здес обявляем слайс с зависимостями тоест добавляем все сервисы и конструкторы
+	dependencies := []interface{}{
+		app.NewServer, //это сервер
+		mux.NewRouter, //это роутер
+		func() (*pgxpool.Pool, error) { //это фукция конструктор который принимает *pgxpool.Pool, error
+			connCtx, _ := context.WithTimeout(context.Background(), time.Second*5)
+			return pgxpool.Connect(connCtx, dbConnectionString)
 		},
-		customers.NewService,
-		security.NewService,
-		func(server *app.Server) *http.Server {
+		customers.NewService, //это сервис клиентов
+		managers.NewService,  //это сервис менеджеров
+		func(server *app.Server) *http.Server { //это фукция конструктор который принимает *app.Server и вернет *http.Server
 			return &http.Server{
-				Addr:    net.JoinHostPort(host, port),
+				Addr:    host + ":" + port,
 				Handler: server,
 			}
 		},
 	}
 
+	//обявляем новый контейнер
 	container := dig.New()
-	for _, dep := range deps {
-		err = container.Provide(dep)
+	//в цикле регистрируем все зависимостив контейнер
+	for _, v := range dependencies {
+		err = container.Provide(v)
 		if err != nil {
 			return err
 		}
 	}
 
+	/*вызываем метод Invoke позволяет вызвать на контейнере функøия, при этом подставит нам в
+	параметры тот объект, который нужно "собрать" (именно в ÿтот момент все
+	зависимости будут собраны, либо мы полуùим ощибку)*/
 	err = container.Invoke(func(server *app.Server) {
 		server.Init()
 	})
+	//если получили ошибку то вернем его
 	if err != nil {
 		return err
 	}
@@ -65,5 +75,4 @@ func execute(host string, port string, dsn string) (err error) {
 	return container.Invoke(func(server *http.Server) error {
 		return server.ListenAndServe()
 	})
-
 }

@@ -8,70 +8,73 @@ import (
 	"log"
 	"time"
 
-	"github.com/jackc/pgx"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v4"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-// ErrNoSuchUser variable
-var ErrNoSuchUser = errors.New("no such user")
+var (
+	//ErrNoSuchUser ...
+	ErrNoSuchUser = errors.New("no such user")
+	//ErrInvalidPassword ....
+	ErrInvalidPassword = errors.New("invalid password")
+	//ErrInternal ....
+	ErrInternal = errors.New("internal error")
+	//ErrExpireToken ...
+	ErrExpireToken = errors.New("token expired")
+)
 
-// ErrInvalidPassword variable
-var ErrInvalidPassword = errors.New("invalid password")
-
-// ErrInternal variable
-var ErrInternal = errors.New("internal error")
-
-// ErrExpireToken ...
-var ErrExpireToken = errors.New("token expired")
-
-// Service ...
+//Service сервис авторизации
 type Service struct {
-	pool *pgxpool.Pool
+	db *pgxpool.Pool
 }
 
-// NewService ...
-func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool}
+//NewService создаем новый сервис авторизации
+func NewService(db *pgxpool.Pool) *Service {
+	return &Service{db: db}
 }
 
-// Auth ...
-func (s *Service) Auth(login string, password string) bool {
+//Auth в этом мметоде проверяем логин и парол если они верны то вернем true если нет false
+func (s *Service) Auth(login, password string) bool {
 
-	err := s.pool.QueryRow(context.Background(), `
-	SELECT login, password FROM managers WHERE login = $1 AND password = $2
-	`, login, password).Scan(&login, &password)
+	//это наш sql запрос
+	sqlStatement := `select login, password from managers where login=$1 and password=$2`
 
+	//выполняем запрос к базу
+	err := s.db.QueryRow(context.Background(), sqlStatement, login, password).Scan(&login, &password)
+	//если при выполнения запроса к базе  получили ошибку то печатаем ошибку и вернем false
 	if err != nil {
 		log.Print(err)
 		return false
 	}
+	//если все хорошо (тоест такой пользовател есть) то вернем true
 	return true
 }
 
-// TokenForCustomer ...
-func (s *Service) TokenForCustomer(
-	ctx context.Context,
-	phone string,
-	password string,
-) (string, error) {
+//TokenForCustomer .... метод для генерации токена
+func (s *Service) TokenForCustomer(ctx context.Context, phone, password string) (string, error) {
+
+	//обявляем переменную хеш и парол
 	var hash string
 	var id int64
-
-	err := s.pool.QueryRow(ctx, `SELECT id, password FROM customers WHERE phone = $1`, phone).Scan(&id, &hash)
-
+	//выполняем запрос и извелекаем ид и хеш пароля
+	err := s.db.QueryRow(ctx, "select id, password from customers where phone = $1", phone).Scan(&id, &hash)
+	//если ничего не получили вернем ErrNoSuchUser
 	if err == pgx.ErrNoRows {
 		return "", ErrNoSuchUser
 	}
+	//если другая ошибка то вернем ErrInternal
 	if err != nil {
 		return "", ErrInternal
 	}
-
+	//проверим хеш с представленным паролем
 	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	if err != nil {
 		return "", ErrInvalidPassword
 	}
 
+	//генерируем токен
 	buffer := make([]byte, 256)
 	n, err := rand.Read(buffer)
 	if n != len(buffer) || err != nil {
@@ -79,36 +82,31 @@ func (s *Service) TokenForCustomer(
 	}
 
 	token := hex.EncodeToString(buffer)
-	_, err = s.pool.Exec(ctx, `INSERT INTO customers_tokens(token, customer_id) VALUES($1, $2)`, token, id)
+	_, err = s.db.Exec(ctx, "insert into customers_tokens(token, customer_id) values($1, $2)", token, id)
 	if err != nil {
 		return "", ErrInternal
 	}
 
 	return token, nil
+
 }
 
-// AuthenticateCustomer ...
-func (s *Service) AuthenticateCustomer(
-	ctx context.Context,
-	token string,
-) (int64, error) {
+//AuthenticateCustomer ...
+func (s *Service) AuthenticateCustomer(ctx context.Context, tkn string) (int64, error) {
 	var id int64
 	var expire time.Time
-
-	err := s.pool.QueryRow(ctx, `SELECT customer_id, expire FROM customers_tokens WHERE token = $1`, token).Scan(&id, &expire)
-
+	err := s.db.QueryRow(ctx, "select customer_id, expire from customers_tokens where token=$1", tkn).Scan(&id, &expire)
 	if err == pgx.ErrNoRows {
 		return 0, ErrNoSuchUser
 	}
-
 	if err != nil {
 		return 0, ErrInternal
 	}
 
-	timeNow := time.Now().Format("2006-01-02 15:04:05")
-	timeEnd := expire.Format("2006-01-02 15:04:05")
+	tNow := time.Now().Format("2006-01-02 15:04:05")
+	tEnd := expire.Format("2006-01-02 15:04:05")
 
-	if timeNow > timeEnd {
+	if tNow > tEnd {
 		return 0, ErrExpireToken
 	}
 
