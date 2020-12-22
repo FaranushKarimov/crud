@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// Server ...
+// Server ... sfisndfgi
 type Server struct {
 	mux          *mux.Router
 	customersSvc *customers.Service
